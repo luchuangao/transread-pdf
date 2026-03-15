@@ -1,0 +1,783 @@
+document.addEventListener('DOMContentLoaded', async () => {
+  const urlParams = new URLSearchParams(window.location.search);
+  const fileUrl = urlParams.get('file');
+
+  const loadingDiv = document.getElementById('loading');
+  const loadingText = document.getElementById('loading-text');
+  const uploadContainer = document.getElementById('upload-container');
+  const fileInput = document.getElementById('file-input');
+  const uploadBtn = document.getElementById('upload-btn');
+  const contentDiv = document.getElementById('content');
+  const errorPlaceholder = document.getElementById('error-placeholder');
+  
+  const sidebar = document.getElementById('sidebar');
+  const outlineContainer = document.getElementById('outline-container');
+  const pageCountSpan = document.getElementById('page-count');
+  const pageNumInput = document.getElementById('page-num-input');
+  const docTitleSpan = document.getElementById('doc-title');
+  const viewerContainer = document.getElementById('viewer');
+  
+  // 新增工具栏按钮
+  const toggleSidebarBtn = document.getElementById('toggle-sidebar');
+  const zoomOutBtn = document.getElementById('zoom-out');
+  const zoomInBtn = document.getElementById('zoom-in');
+  const zoomDisplay = document.getElementById('zoom-display');
+
+  // 状态变量
+  let currentPdf = null;
+  let totalPages = 0;
+  let currentZoom = 100;
+  let sidebarVisible = false;
+
+  // 侧边栏切换
+  toggleSidebarBtn.addEventListener('click', () => {
+    sidebarVisible = !sidebarVisible;
+    sidebar.style.display = sidebarVisible ? 'flex' : 'none';
+  });
+
+  // 缩放控制
+  function updateZoom(newZoom) {
+    if (newZoom < 50) newZoom = 50;
+    if (newZoom > 200) newZoom = 200;
+    currentZoom = newZoom;
+    zoomDisplay.innerText = `${currentZoom}%`;
+    
+    // 更新所有页面容器的宽度和字体大小
+    const containers = document.querySelectorAll('.page-container');
+    containers.forEach(container => {
+      container.style.width = `${700 * (currentZoom / 100)}px`;
+      container.style.fontSize = `${18 * (currentZoom / 100)}px`;
+    });
+  }
+
+  zoomOutBtn.addEventListener('click', () => updateZoom(currentZoom - 10));
+  zoomInBtn.addEventListener('click', () => updateZoom(currentZoom + 10));
+
+  // 打印和下载功能
+  const actionPrint = document.getElementById('action-print');
+  const actionDownload = document.getElementById('action-download');
+
+  actionPrint.addEventListener('click', () => {
+    window.print();
+  });
+
+  actionDownload.addEventListener('click', () => {
+    if (!fileUrl) return;
+    const a = document.createElement('a');
+    a.href = fileUrl;
+    a.download = docTitleSpan.innerText || 'download.pdf';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  });
+
+  // 批注工具状态
+  let currentTool = null; // 'text', 'draw'
+  const toolHighlight = document.getElementById('tool-highlight');
+  const toolText = document.getElementById('tool-text');
+  const toolDraw = document.getElementById('tool-draw');
+  const toolImage = document.getElementById('tool-image');
+
+  function setActiveTool(tool) {
+    if (currentTool === tool) {
+      currentTool = null; // Toggle off
+    } else {
+      currentTool = tool;
+    }
+    
+    // 更新UI
+    [toolText, toolDraw].forEach(btn => btn.classList.remove('active-tool'));
+    
+    if (currentTool === 'text') toolText.classList.add('active-tool');
+    if (currentTool === 'draw') toolDraw.classList.add('active-tool');
+
+    // 启用/禁用所有页面的批注层
+    document.querySelectorAll('.annotation-layer').forEach(layer => {
+      if (currentTool) {
+        layer.classList.add('active');
+        layer.style.cursor = currentTool === 'text' ? 'text' : 'crosshair';
+      } else {
+        layer.classList.remove('active');
+      }
+    });
+  }
+
+  toolText.addEventListener('click', () => setActiveTool('text'));
+  toolDraw.addEventListener('click', () => setActiveTool('draw'));
+
+  // 1. 高亮功能 (基于 Selection API)
+  toolHighlight.addEventListener('click', () => {
+    const selection = window.getSelection();
+    if (!selection.rangeCount || selection.isCollapsed) {
+      alert('请先在页面上用鼠标选中要高亮的文本');
+      return;
+    }
+
+    const range = selection.getRangeAt(0);
+    const span = document.createElement('span');
+    span.className = 'highlighted-text';
+    
+    try {
+      range.surroundContents(span);
+      selection.removeAllRanges();
+    } catch (e) {
+      console.warn("跨段落高亮暂不支持，请在同一段落内选择");
+    }
+  });
+
+  // 2. 插入图片功能
+  toolImage.addEventListener('click', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.onchange = (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        // 默认插入到当前视口内的第一页
+        const containers = document.querySelectorAll('.page-container');
+        let targetPage = containers[0];
+        const viewerTop = viewerContainer.scrollTop;
+        
+        for (let i = 0; i < containers.length; i++) {
+          if (containers[i].offsetTop + containers[i].offsetHeight > viewerTop) {
+            targetPage = containers[i];
+            break;
+          }
+        }
+
+        let layer = targetPage.querySelector('.annotation-layer');
+        if (!layer) return;
+
+        const img = document.createElement('img');
+        img.src = event.target.result;
+        img.className = 'inserted-image';
+        img.style.top = '100px';
+        img.style.left = '100px';
+
+        // 简单的拖拽实现
+        let isDragging = false;
+        let startX, startY, initialX, initialY;
+
+        img.addEventListener('mousedown', (e) => {
+          isDragging = true;
+          startX = e.clientX;
+          startY = e.clientY;
+          initialX = parseInt(img.style.left) || 0;
+          initialY = parseInt(img.style.top) || 0;
+          e.preventDefault(); // 防止默认的图片拖拽
+        });
+
+        document.addEventListener('mousemove', (e) => {
+          if (!isDragging) return;
+          const dx = e.clientX - startX;
+          const dy = e.clientY - startY;
+          img.style.left = `${initialX + dx}px`;
+          img.style.top = `${initialY + dy}px`;
+        });
+
+        document.addEventListener('mouseup', () => {
+          isDragging = false;
+        });
+
+        // 双击删除图片
+        img.addEventListener('dblclick', () => {
+          if (confirm('删除这张图片？')) {
+            img.remove();
+          }
+        });
+
+        layer.appendChild(img);
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
+  });
+
+  // 页码跳转
+  pageNumInput.addEventListener('change', (e) => {
+    let pageNum = parseInt(e.target.value);
+    if (isNaN(pageNum) || pageNum < 1) pageNum = 1;
+    if (pageNum > totalPages) pageNum = totalPages;
+    
+    pageNumInput.value = pageNum;
+    
+    const targetPage = document.getElementById(`page-${pageNum}`);
+    if (targetPage) {
+      targetPage.scrollIntoView({ behavior: 'smooth' });
+    }
+  });
+
+  // 监听滚动更新页码
+  viewerContainer.addEventListener('scroll', () => {
+    // 简单的节流，防止滚动时计算太频繁
+    if (viewerContainer.scrollTimeout) return;
+    viewerContainer.scrollTimeout = setTimeout(() => {
+      const containers = document.querySelectorAll('.page-container');
+      const viewerTop = viewerContainer.scrollTop;
+      
+      for (let i = 0; i < containers.length; i++) {
+        const container = containers[i];
+        if (container.offsetTop + container.offsetHeight / 2 > viewerTop) {
+          const pageNum = container.id.split('-')[1];
+          if (pageNumInput.value !== pageNum && document.activeElement !== pageNumInput) {
+            pageNumInput.value = pageNum;
+          }
+          break;
+        }
+      }
+      viewerContainer.scrollTimeout = null;
+    }, 100);
+  });
+
+  // 主题切换逻辑
+  const themeBtns = {
+    'dark': document.getElementById('theme-dark'),
+    'light': document.getElementById('theme-light'),
+    'sepia': document.getElementById('theme-sepia')
+  };
+
+  function setTheme(themeName) {
+    // 移除旧主题
+    document.body.removeAttribute('data-theme');
+    // 如果不是默认的 dark，则添加对应的主题属性
+    if (themeName !== 'dark') {
+      document.body.setAttribute('data-theme', themeName);
+    }
+    
+    // 更新按钮状态
+    Object.values(themeBtns).forEach(btn => btn.classList.remove('active'));
+    if (themeBtns[themeName]) {
+      themeBtns[themeName].classList.add('active');
+    }
+
+    // 保存用户的选择
+    localStorage.setItem('pdf-reader-theme', themeName);
+  }
+
+  // 初始化加载上次选择的主题
+  const savedTheme = localStorage.getItem('pdf-reader-theme') || 'dark';
+  setTheme(savedTheme);
+
+  // 绑定点击事件
+  Object.keys(themeBtns).forEach(themeName => {
+    themeBtns[themeName].addEventListener('click', () => setTheme(themeName));
+  });
+
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+
+  uploadBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      errorPlaceholder.innerHTML = '';
+      const objectUrl = URL.createObjectURL(file);
+      docTitleSpan.innerText = file.name;
+      
+      uploadContainer.style.display = 'none';
+      loadingDiv.style.display = 'block';
+      contentDiv.innerHTML = '';
+      sidebar.style.display = 'none';
+      outlineContainer.innerHTML = '';
+      
+      loadPdf(objectUrl);
+    }
+  });
+
+  if (!fileUrl) {
+    loadingDiv.style.display = 'none';
+    uploadContainer.style.display = 'block';
+    return;
+  }
+
+  try {
+    const urlObj = new URL(fileUrl);
+    const pathname = urlObj.pathname;
+    const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
+    if (filename) {
+      docTitleSpan.innerText = decodeURIComponent(filename);
+    }
+  } catch (e) {}
+
+  loadPdf(fileUrl);
+
+  async function loadPdf(url) {
+    // 矩阵乘法辅助函数 (m1 * m2)
+    function multiply(m1, m2) {
+      const result = new Float32Array(6);
+      result[0] = m1[0] * m2[0] + m1[1] * m2[2];
+      result[1] = m1[0] * m2[1] + m1[1] * m2[3];
+      result[2] = m1[2] * m2[0] + m1[3] * m2[2];
+      result[3] = m1[2] * m2[1] + m1[3] * m2[3];
+      result[4] = m1[4] * m2[0] + m1[5] * m2[2] + m2[4];
+      result[5] = m1[4] * m2[1] + m1[5] * m2[3] + m2[5];
+      return result;
+    }
+
+    // 从页面操作列表提取图片
+    async function extractImages(page, viewport) {
+      const operatorList = await page.getOperatorList();
+      const fnArray = operatorList.fnArray;
+      const argsArray = operatorList.argsArray;
+      
+      const images = [];
+      let currentMatrix = [1, 0, 0, 1, 0, 0]; // 初始变换矩阵
+      const stateStack = [];
+
+      for (let i = 0; i < fnArray.length; i++) {
+        const fn = fnArray[i];
+        const args = argsArray[i];
+
+        if (fn === pdfjsLib.OPS.save) {
+          stateStack.push([...currentMatrix]);
+        } else if (fn === pdfjsLib.OPS.restore) {
+          if (stateStack.length > 0) {
+            currentMatrix = stateStack.pop();
+          }
+        } else if (fn === pdfjsLib.OPS.transform) {
+          // args: [a, b, c, d, e, f]
+          // currentMatrix = args * currentMatrix (注意乘法顺序，PDF spec是 args x CTM)
+          currentMatrix = multiply(currentMatrix, args);
+        } else if (fn === pdfjsLib.OPS.paintImageXObject || fn === pdfjsLib.OPS.paintJpegXObject) {
+          const imgId = args[0];
+          // 图片位置：(0, 0) 在 currentMatrix 变换后的坐标
+          // PDF坐标系是左下角原点，Y轴向上。viewport是左上角原点，Y轴向下。
+          // currentMatrix[5] 是 Y 平移量。
+          // 我们需要的是图片在 viewport 中的视觉 Y 坐标（顶部）。
+          // 由于 PDF 图片通常是 1x1 矩形被缩放，其 top edge 在 PDF 空间是 y=1 (如果未翻转)
+          // 简单起见，我们取变换后的 (0, 1) 点的 Y 坐标作为图片的顶部位置
+          
+          // 计算变换后的点 (0, 1) -> 图片顶部 (假设没有旋转)
+          const x = currentMatrix[4];
+          const y = currentMatrix[5] + currentMatrix[3]; // y + scaleY
+          
+          // 转换为 viewport 坐标
+          const viewPos = viewport.convertToViewportPoint(x, y);
+          
+          images.push({
+            type: 'image',
+            id: imgId,
+            y: viewPos[1], // 视觉上的 Y 坐标
+            x: viewPos[0],
+            width: currentMatrix[0], // 近似宽度
+            height: currentMatrix[3] // 近似高度
+          });
+        }
+      }
+      return images;
+    }
+
+    try {
+      loadingText.innerText = '正在解析 PDF，请稍候...';
+      const loadingTask = pdfjsLib.getDocument(url);
+      
+      loadingTask.onProgress = function (progress) {
+        const percent = progress.total > 0 ? Math.round((progress.loaded / progress.total) * 100) : 0;
+        if (percent > 0) {
+          loadingText.innerText = `正在下载 PDF... ${percent}%`;
+        }
+      };
+
+      const pdf = await loadingTask.promise;
+      currentPdf = pdf;
+      totalPages = pdf.numPages;
+      pageCountSpan.innerText = totalPages;
+
+      await renderOutline(pdf);
+
+      // 逐页解析，恢复流式排版
+      for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        loadingText.innerText = `正在渲染第 ${pageNum} / ${pdf.numPages} 页...`;
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 1.0 }); // 用于坐标转换
+        const textContent = await page.getTextContent();
+        let extractedImages = [];
+        try {
+          extractedImages = await extractImages(page, viewport);
+        } catch (e) {
+          extractedImages = [];
+        }
+
+        // 创建页面容器
+        const pageContainer = document.createElement('div');
+        pageContainer.className = 'page-container';
+        pageContainer.id = `page-${pageNum}`;
+
+        if (extractedImages.length > 0) {
+          renderPageCanvas(page, pageContainer);
+        }
+        
+        // 1. 提取文本段落
+        const paragraphs = [];
+        let currentParagraph = '';
+        let lastItem = null;
+        let paragraphY = 0; // 记录段落起始 Y 坐标
+
+        textContent.items.forEach(item => {
+          const text = item.str.trim();
+          if (!text) return;
+
+          // 计算当前项的视觉 Y 坐标
+          const itemY = viewport.convertToViewportPoint(item.transform[4], item.transform[5])[1];
+
+          if (lastItem) {
+            const lastY = viewport.convertToViewportPoint(lastItem.transform[4], lastItem.transform[5])[1];
+            const height = item.height || 10; // 默认行高
+
+            // 判断换段落 (Y 差值超过 1.5 倍行高)
+            const isNewParagraph = Math.abs(itemY - lastY) > (height * 1.5);
+            
+            if (isNewParagraph) {
+              if (currentParagraph) {
+                paragraphs.push({
+                  type: 'text',
+                  text: currentParagraph,
+                  y: paragraphY
+                });
+              }
+              currentParagraph = item.str;
+              paragraphY = itemY;
+            } else {
+              if (currentParagraph.endsWith('-')) {
+                currentParagraph = currentParagraph.slice(0, -1) + item.str;
+              } else {
+                currentParagraph += ' ' + item.str;
+              }
+            }
+          } else {
+            currentParagraph = item.str;
+            paragraphY = itemY;
+          }
+          lastItem = item;
+        });
+        
+        if (currentParagraph) {
+          paragraphs.push({
+            type: 'text',
+            text: currentParagraph,
+            y: paragraphY
+          });
+        }
+
+        // 2. 合并文本和图片，按 Y 坐标排序
+        const allItems = [...paragraphs, ...extractedImages].sort((a, b) => a.y - b.y);
+
+        // 3. 渲染合并后的内容
+        for (const item of allItems) {
+          if (item.type === 'text') {
+            renderParagraph(item.text, pageContainer);
+          } else if (item.type === 'image') {
+            renderImage(item.id, page, pageContainer);
+          }
+        }
+
+        // 将页码放在最后
+        const pageNumDiv = document.createElement('div');
+        pageNumDiv.className = 'page-number';
+        pageNumDiv.innerText = `${pageNum} / ${pdf.numPages}`;
+        pageContainer.appendChild(pageNumDiv);
+        
+        // 添加批注层... (保持原有逻辑)
+        addAnnotationLayer(pageContainer);
+
+        contentDiv.appendChild(pageContainer);
+
+        if (pageNum === 1) {
+          loadingDiv.style.display = 'none';
+        }
+      }
+    } catch (error) {
+      console.error('Error loading PDF:', error);
+      loadingDiv.style.display = 'none';
+      uploadContainer.style.display = 'block';
+      
+      let errorHtml = `<b>自动读取失败</b><br>原因可能是：跨域限制 (CORS)、当前页面并非真实的 PDF 文件，或者插件没有读取本地文件的权限。`;
+      errorPlaceholder.innerHTML = `<div class="error-msg">${errorHtml}</div>`;
+    }
+  }
+
+  // 渲染段落辅助函数
+  function renderParagraph(text, container) {
+    if (!text.trim()) return;
+    
+    let cleanText = text.replace(/-\s+/g, '').replace(/\s{2,}/g, ' ');
+
+    const block = document.createElement('div');
+    block.className = 'paragraph-block';
+    
+    const enDiv = document.createElement('div');
+    enDiv.className = 'en-text';
+    enDiv.setAttribute('translate', 'no');
+    enDiv.classList.add('notranslate');
+    enDiv.innerText = cleanText;
+    
+    const zhDiv = document.createElement('div');
+    zhDiv.className = 'zh-text';
+    zhDiv.innerText = cleanText;
+
+    block.appendChild(enDiv);
+    block.appendChild(zhDiv);
+    container.appendChild(block);
+  }
+
+  function renderPageCanvas(page, container) {
+    const wrapper = document.createElement('div');
+    wrapper.style.textAlign = 'center';
+    wrapper.style.margin = '10px 0 24px 0';
+
+    const canvas = document.createElement('canvas');
+    canvas.style.width = '100%';
+    canvas.style.height = 'auto';
+    canvas.style.borderRadius = '6px';
+    canvas.style.boxShadow = '0 2px 10px rgba(0,0,0,0.25)';
+
+    wrapper.appendChild(canvas);
+    container.appendChild(wrapper);
+
+    try {
+      const scale = 1.6;
+      const viewport = page.getViewport({ scale });
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      const ctx = canvas.getContext('2d');
+      page.render({ canvasContext: ctx, viewport }).promise.catch(() => {
+        wrapper.remove();
+      });
+    } catch (e) {
+      wrapper.remove();
+    }
+  }
+
+  // 渲染图片辅助函数（异步加载，不阻塞文本渲染）
+  function renderImage(imgId, page, container) {
+    const imgWrapper = document.createElement('div');
+    imgWrapper.style.textAlign = 'center';
+    imgWrapper.style.margin = '20px 0';
+    container.appendChild(imgWrapper);
+
+    const timeoutMs = 1500;
+    let settled = false;
+    const timeoutId = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      imgWrapper.remove();
+    }, timeoutMs);
+
+    const normalizeToNode = (img) => {
+      if (!img) return null;
+
+      if (img instanceof HTMLImageElement || img instanceof HTMLCanvasElement) {
+        return img;
+      }
+
+      if (typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap) {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        return canvas;
+      }
+
+      if (typeof ImageData !== 'undefined' && img instanceof ImageData) {
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.putImageData(img, 0, 0);
+        return canvas;
+      }
+
+      if (img && typeof img.width === 'number' && typeof img.height === 'number' && img.data) {
+        try {
+          const imageData = new ImageData(new Uint8ClampedArray(img.data), img.width, img.height);
+          const canvas = document.createElement('canvas');
+          canvas.width = img.width;
+          canvas.height = img.height;
+          const ctx = canvas.getContext('2d');
+          ctx.putImageData(imageData, 0, 0);
+          return canvas;
+        } catch (e) {
+          return null;
+        }
+      }
+
+      return null;
+    };
+
+    try {
+      page.objs.get(imgId, (img) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+
+        const node = normalizeToNode(img);
+        if (!node) {
+          imgWrapper.remove();
+          return;
+        }
+
+        node.style.maxWidth = '100%';
+        node.style.height = 'auto';
+        node.style.boxShadow = '0 2px 8px rgba(0,0,0,0.1)';
+        imgWrapper.appendChild(node);
+      });
+    } catch (e) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeoutId);
+      imgWrapper.remove();
+    }
+  }
+
+  // 添加批注层辅助函数
+  function addAnnotationLayer(pageContainer) {
+         // 添加批注层和绘图层
+         const annotationLayer = document.createElement('div');
+         annotationLayer.className = 'annotation-layer';
+         
+         const drawCanvas = document.createElement('canvas');
+         drawCanvas.style.position = 'absolute';
+         drawCanvas.style.top = '0';
+         drawCanvas.style.left = '0';
+         drawCanvas.style.width = '100%';
+         drawCanvas.style.height = '100%';
+         drawCanvas.style.pointerEvents = 'none';
+         drawCanvas.style.zIndex = '1';
+         
+         // 等待页面渲染后设置 canvas 尺寸
+         setTimeout(() => {
+           drawCanvas.width = pageContainer.offsetWidth;
+           drawCanvas.height = pageContainer.offsetHeight;
+         }, 100);
+ 
+         // 自由绘制逻辑
+         let isDrawing = false;
+         let ctx = drawCanvas.getContext('2d');
+         ctx.strokeStyle = '#ffeb3b'; // 默认黄色荧光笔
+         ctx.lineWidth = 4;
+         ctx.lineCap = 'round';
+         ctx.lineJoin = 'round';
+ 
+         annotationLayer.addEventListener('mousedown', (e) => {
+           if (currentTool !== 'draw') return;
+           isDrawing = true;
+           const rect = drawCanvas.getBoundingClientRect();
+           ctx.beginPath();
+           ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
+         });
+ 
+         annotationLayer.addEventListener('mousemove', (e) => {
+           if (!isDrawing || currentTool !== 'draw') return;
+           const rect = drawCanvas.getBoundingClientRect();
+           ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
+           ctx.stroke();
+         });
+ 
+         annotationLayer.addEventListener('mouseup', () => {
+           isDrawing = false;
+         });
+ 
+         annotationLayer.addEventListener('mouseleave', () => {
+           isDrawing = false;
+         });
+ 
+         // 文本备注逻辑
+         annotationLayer.addEventListener('click', (e) => {
+           if (currentTool !== 'text') return;
+           // 防止点击已有备注时创建新备注
+           if (e.target.classList.contains('text-note')) return;
+ 
+           const rect = annotationLayer.getBoundingClientRect();
+           const x = e.clientX - rect.left;
+           const y = e.clientY - rect.top;
+ 
+           const note = document.createElement('div');
+           note.className = 'text-note';
+           note.contentEditable = true;
+           note.style.left = `${x}px`;
+           note.style.top = `${y}px`;
+           note.innerText = '输入备注...';
+ 
+           // 双击删除备注
+           note.addEventListener('dblclick', () => {
+             if (confirm('删除这条备注？')) {
+               note.remove();
+             }
+           });
+ 
+           // 失去焦点时如果为空则删除
+           note.addEventListener('blur', () => {
+             if (!note.innerText.trim()) {
+               note.remove();
+             }
+           });
+ 
+           annotationLayer.appendChild(note);
+           // 延迟聚焦，避免立即触发 click 事件
+           setTimeout(() => {
+             note.focus();
+             document.execCommand('selectAll', false, null);
+           }, 50);
+           
+           // 添加完一个后自动关闭工具
+           setActiveTool(null);
+         });
+ 
+         pageContainer.appendChild(drawCanvas);
+         pageContainer.appendChild(annotationLayer);
+  }
+// 渲染侧边栏目录函数
+  async function renderOutline(pdf) {
+    try {
+      const outline = await pdf.getOutline();
+      if (!outline || outline.length === 0) {
+        // 如果没有目录，禁用侧边栏按钮
+        toggleSidebarBtn.style.opacity = '0.5';
+        toggleSidebarBtn.style.pointerEvents = 'none';
+        return;
+      }
+
+      // 默认显示侧边栏
+      sidebarVisible = true;
+      sidebar.style.display = 'flex';
+
+      const renderItems = (items, container) => {
+        const ul = document.createElement('ul');
+        items.forEach(item => {
+          const li = document.createElement('li');
+          const a = document.createElement('a');
+          a.innerText = item.title;
+          
+          a.onclick = async () => {
+            let dest = item.dest;
+            if (typeof dest === 'string') {
+              dest = await pdf.getDestination(dest);
+            }
+            if (dest) {
+              try {
+                const pageIndex = await pdf.getPageIndex(dest[0]);
+                const pageNum = pageIndex + 1;
+                const pageElement = document.getElementById(`page-${pageNum}`);
+                if (pageElement) {
+                  pageElement.scrollIntoView({ behavior: 'smooth' });
+                }
+              } catch (e) {}
+            }
+          };
+          li.appendChild(a);
+          
+          if (item.items && item.items.length > 0) {
+            renderItems(item.items, li);
+          }
+          ul.appendChild(li);
+        });
+        container.appendChild(ul);
+      };
+
+      renderItems(outline, outlineContainer);
+    } catch (e) {}
+  }
+});
