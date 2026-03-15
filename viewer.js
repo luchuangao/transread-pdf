@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const zoomOutBtn = document.getElementById('zoom-out');
   const zoomInBtn = document.getElementById('zoom-in');
   const zoomDisplay = document.getElementById('zoom-display');
+  const actionHome = document.getElementById('action-home');
   const recentListEl = document.getElementById('recent-list');
   const recentEmptyEl = document.getElementById('recent-empty');
   const recentClearBtn = document.getElementById('recent-clear');
@@ -34,6 +35,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   let sidebarVisible = false;
   let currentFileBlob = null;
   let currentFileName = '';
+  let currentDocKey = null;
+  let saveReadingPosTimer = null;
+  let activeLoadSeq = 0;
+  let activeObjectUrl = null;
 
   function storageGet(key, defaultValue) {
     return new Promise((resolve) => {
@@ -246,6 +251,42 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   });
 
+  function goHome() {
+    activeLoadSeq += 1;
+    currentPdf = null;
+    totalPages = 0;
+    pageCountSpan.innerText = '0';
+    pageNumInput.value = '1';
+    sidebarVisible = false;
+    sidebar.style.display = 'none';
+    outlineContainer.innerHTML = '';
+    contentDiv.innerHTML = '';
+    loadingDiv.style.display = 'none';
+    uploadContainer.style.display = 'block';
+    errorPlaceholder.innerHTML = '';
+    docTitleSpan.innerText = 'PDF 网页版';
+    currentFileBlob = null;
+    currentFileName = '';
+    currentDocKey = null;
+    fileInput.value = '';
+    window.history.replaceState(null, '', 'viewer.html');
+
+    if (activeObjectUrl) {
+      try {
+        URL.revokeObjectURL(activeObjectUrl);
+      } catch (e) {}
+      activeObjectUrl = null;
+    }
+
+    renderRecentList();
+  }
+
+  if (actionHome) {
+    actionHome.addEventListener('click', () => {
+      goHome();
+    });
+  }
+
   // 批注工具状态
   let currentTool = null; // 'text', 'draw'
   const toolHighlight = document.getElementById('tool-highlight');
@@ -400,6 +441,18 @@ document.addEventListener('DOMContentLoaded', async () => {
           if (pageNumInput.value !== pageNum && document.activeElement !== pageNumInput) {
             pageNumInput.value = pageNum;
           }
+          if (currentDocKey) {
+            const pageNumInt = parseInt(pageNum, 10);
+            const offsetInPage = Math.max(0, viewerTop - container.offsetTop);
+            if (saveReadingPosTimer) clearTimeout(saveReadingPosTimer);
+            saveReadingPosTimer = setTimeout(() => {
+              storageSet(`readingPos:${currentDocKey}`, {
+                pageNum: pageNumInt,
+                offsetInPage,
+                savedAt: Date.now()
+              });
+            }, 250);
+          }
           break;
         }
       }
@@ -460,9 +513,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       currentFileBlob = file;
       currentFileName = file.name;
+      currentDocKey = `idb:${key}`;
       docTitleSpan.innerText = file.name;
       window.history.replaceState(null, '', `viewer.html?key=${encodeURIComponent(key)}`);
+      if (activeObjectUrl) {
+        try {
+          URL.revokeObjectURL(activeObjectUrl);
+        } catch (e) {}
+      }
       const objectUrl = URL.createObjectURL(file);
+      activeObjectUrl = objectUrl;
       
       uploadContainer.style.display = 'none';
       loadingDiv.style.display = 'block';
@@ -482,6 +542,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   if (fileUrl) {
+    currentDocKey = `url:${fileUrl}`;
     try {
       const urlObj = new URL(fileUrl);
       const pathname = urlObj.pathname;
@@ -500,6 +561,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadingDiv.style.display = 'block';
     loadPdf(fileUrl);
   } else if (fileKey) {
+    currentDocKey = `idb:${fileKey}`;
     uploadContainer.style.display = 'none';
     loadingDiv.style.display = 'block';
     contentDiv.innerHTML = '';
@@ -515,11 +577,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentFileName = record.name || 'document.pdf';
     docTitleSpan.innerText = currentFileName;
     await addRecentPdf({ type: 'idb', key: fileKey, name: currentFileName });
+    if (activeObjectUrl) {
+      try {
+        URL.revokeObjectURL(activeObjectUrl);
+      } catch (e) {}
+    }
     const objectUrl = URL.createObjectURL(record.blob);
+    activeObjectUrl = objectUrl;
     loadPdf(objectUrl);
   }
 
   async function loadPdf(url) {
+    const loadSeq = ++activeLoadSeq;
     // 矩阵乘法辅助函数 (m1 * m2)
     function multiply(m1, m2) {
       const result = new Float32Array(6);
@@ -586,6 +655,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     try {
+      if (loadSeq !== activeLoadSeq) return;
       loadingText.innerText = '正在解析 PDF，请稍候...';
       const loadingTask = pdfjsLib.getDocument(url);
       
@@ -597,16 +667,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       };
 
       const pdf = await loadingTask.promise;
+      if (loadSeq !== activeLoadSeq) return;
       currentPdf = pdf;
       totalPages = pdf.numPages;
       pageCountSpan.innerText = totalPages;
 
       await renderOutline(pdf);
+      if (loadSeq !== activeLoadSeq) return;
+
+      const restorePos = currentDocKey ? await storageGet(`readingPos:${currentDocKey}`, null) : null;
+      let restored = false;
 
       // 逐页解析，恢复流式排版
       for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        if (loadSeq !== activeLoadSeq) return;
         loadingText.innerText = `正在渲染第 ${pageNum} / ${pdf.numPages} 页...`;
         const page = await pdf.getPage(pageNum);
+        if (loadSeq !== activeLoadSeq) return;
         const viewport = page.getViewport({ scale: 1.0 }); // 用于坐标转换
         const textContent = await page.getTextContent();
         let extractedImages = [];
@@ -615,6 +692,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (e) {
           extractedImages = [];
         }
+        if (loadSeq !== activeLoadSeq) return;
 
         // 创建页面容器
         const pageContainer = document.createElement('div');
@@ -702,6 +780,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (pageNum === 1) {
           loadingDiv.style.display = 'none';
+        }
+
+        if (!restored && restorePos && restorePos.pageNum === pageNum) {
+          restored = true;
+          const offset = typeof restorePos.offsetInPage === 'number' ? restorePos.offsetInPage : 0;
+          pageNumInput.value = String(pageNum);
+          requestAnimationFrame(() => {
+            viewerContainer.scrollTop = pageContainer.offsetTop + offset;
+          });
         }
       }
     } catch (error) {
