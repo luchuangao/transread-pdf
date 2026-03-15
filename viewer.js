@@ -1,6 +1,7 @@
 document.addEventListener('DOMContentLoaded', async () => {
   const urlParams = new URLSearchParams(window.location.search);
   const fileUrl = urlParams.get('file');
+  const fileKey = urlParams.get('key');
 
   const loadingDiv = document.getElementById('loading');
   const loadingText = document.getElementById('loading-text');
@@ -22,22 +23,169 @@ document.addEventListener('DOMContentLoaded', async () => {
   const zoomOutBtn = document.getElementById('zoom-out');
   const zoomInBtn = document.getElementById('zoom-in');
   const zoomDisplay = document.getElementById('zoom-display');
-  const actionSearch = document.getElementById('action-search');
-  const searchPanel = document.getElementById('search-panel');
-  const searchInput = document.getElementById('search-input');
-  const searchPrev = document.getElementById('search-prev');
-  const searchNext = document.getElementById('search-next');
-  const searchClose = document.getElementById('search-close');
-  const searchMeta = document.getElementById('search-meta');
-  const searchCase = document.getElementById('search-case');
+  const recentListEl = document.getElementById('recent-list');
+  const recentEmptyEl = document.getElementById('recent-empty');
+  const recentClearBtn = document.getElementById('recent-clear');
 
   // 状态变量
   let currentPdf = null;
   let totalPages = 0;
   let currentZoom = 100;
   let sidebarVisible = false;
-  let searchMatches = [];
-  let searchIndex = -1;
+  let currentFileBlob = null;
+  let currentFileName = '';
+
+  function storageGet(key, defaultValue) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.get({ [key]: defaultValue }, (res) => {
+          resolve(res[key] ?? defaultValue);
+        });
+      } catch (e) {
+        resolve(defaultValue);
+      }
+    });
+  }
+
+  function storageSet(key, value) {
+    return new Promise((resolve) => {
+      try {
+        chrome.storage.local.set({ [key]: value }, () => resolve());
+      } catch (e) {
+        resolve();
+      }
+    });
+  }
+
+  function openRecentDb() {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('transreadPdf', 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('files')) {
+          db.createObjectStore('files', { keyPath: 'key' });
+        }
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  }
+
+  async function idbPutPdfFile(key, file) {
+    const db = await openRecentDb();
+    return new Promise((resolve) => {
+      const tx = db.transaction('files', 'readwrite');
+      const store = tx.objectStore('files');
+      store.put({
+        key,
+        name: file.name,
+        type: file.type,
+        blob: file,
+        savedAt: Date.now()
+      });
+      tx.oncomplete = () => {
+        db.close();
+        resolve();
+      };
+      tx.onerror = () => {
+        db.close();
+        resolve();
+      };
+    });
+  }
+
+  async function idbGetPdfFile(key) {
+    const db = await openRecentDb();
+    return new Promise((resolve) => {
+      const tx = db.transaction('files', 'readonly');
+      const store = tx.objectStore('files');
+      const req = store.get(key);
+      req.onsuccess = () => {
+        db.close();
+        resolve(req.result || null);
+      };
+      req.onerror = () => {
+        db.close();
+        resolve(null);
+      };
+    });
+  }
+
+  function formatRelativeTime(ts) {
+    const diff = Date.now() - ts;
+    const s = Math.floor(diff / 1000);
+    if (s < 60) return '刚刚';
+    const m = Math.floor(s / 60);
+    if (m < 60) return `${m} 分钟前`;
+    const h = Math.floor(m / 60);
+    if (h < 24) return `${h} 小时前`;
+    const d = Math.floor(h / 24);
+    return `${d} 天前`;
+  }
+
+  async function addRecentPdf(entry) {
+    const list = await storageGet('recentPdfs', []);
+    const key = entry.type === 'url' ? entry.url : entry.key;
+    const now = Date.now();
+    const normalized = {
+      key,
+      type: entry.type,
+      name: entry.name || '',
+      url: entry.url || '',
+      lastOpenedAt: now
+    };
+
+    const next = [normalized, ...list.filter((x) => x && x.key !== key)];
+    await storageSet('recentPdfs', next.slice(0, 30));
+    await renderRecentList();
+  }
+
+  async function clearRecentList() {
+    await storageSet('recentPdfs', []);
+    await renderRecentList();
+  }
+
+  async function renderRecentList() {
+    if (!recentListEl || !recentEmptyEl) return;
+    const list = await storageGet('recentPdfs', []);
+    recentListEl.innerHTML = '';
+
+    if (!list || list.length === 0) {
+      recentEmptyEl.style.display = 'block';
+      return;
+    }
+    recentEmptyEl.style.display = 'none';
+
+    list.forEach((item) => {
+      const li = document.createElement('li');
+      li.className = 'recent-item';
+      li.title = item.type === 'url' ? item.url : '点击重新打开';
+
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = item.name || item.url || '未命名 PDF';
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      meta.textContent = formatRelativeTime(item.lastOpenedAt || Date.now());
+
+      li.appendChild(name);
+      li.appendChild(meta);
+
+      li.addEventListener('click', () => {
+        if (item.type === 'url' && item.url) {
+          window.location.href = `viewer.html?file=${encodeURIComponent(item.url)}`;
+          return;
+        }
+        if (item.type === 'idb' && item.key) {
+          window.location.href = `viewer.html?key=${encodeURIComponent(item.key)}`;
+          return;
+        }
+      });
+
+      recentListEl.appendChild(li);
+    });
+  }
 
   // 侧边栏切换
   toggleSidebarBtn.addEventListener('click', () => {
@@ -63,159 +211,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   zoomOutBtn.addEventListener('click', () => updateZoom(currentZoom - 10));
   zoomInBtn.addEventListener('click', () => updateZoom(currentZoom + 10));
 
-  function updateSearchMeta() {
-    const total = searchMatches.length;
-    if (total === 0 || searchIndex < 0) {
-      searchMeta.innerText = `0/${total}`;
-      return;
-    }
-    searchMeta.innerText = `${searchIndex + 1}/${total}`;
-  }
-
-  function clearSearchHighlights() {
-    const hits = contentDiv.querySelectorAll('.search-hit');
-    hits.forEach((hit) => {
-      const textNode = document.createTextNode(hit.textContent || '');
-      hit.replaceWith(textNode);
-    });
-    searchMatches = [];
-    searchIndex = -1;
-    updateSearchMeta();
-  }
-
-  function wrapMatchesInTextNode(textNode, query, caseSensitive) {
-    const text = textNode.nodeValue || '';
-    if (!text.trim()) return 0;
-    const haystack = caseSensitive ? text : text.toLowerCase();
-    const needle = caseSensitive ? query : query.toLowerCase();
-    if (!needle) return 0;
-
-    let count = 0;
-    let startIndex = 0;
-    let idx = haystack.indexOf(needle, startIndex);
-    if (idx === -1) return 0;
-
-    const frag = document.createDocumentFragment();
-    while (idx !== -1) {
-      const before = text.slice(startIndex, idx);
-      if (before) frag.appendChild(document.createTextNode(before));
-
-      const matchText = text.slice(idx, idx + needle.length);
-      const span = document.createElement('span');
-      span.className = 'search-hit';
-      span.textContent = matchText;
-      frag.appendChild(span);
-      count++;
-
-      startIndex = idx + needle.length;
-      idx = haystack.indexOf(needle, startIndex);
-    }
-
-    const after = text.slice(startIndex);
-    if (after) frag.appendChild(document.createTextNode(after));
-    textNode.replaceWith(frag);
-    return count;
-  }
-
-  function runSearch() {
-    const query = (searchInput.value || '').trim();
-    clearSearchHighlights();
-    if (!query) return;
-
-    const caseSensitive = !!searchCase.checked;
-    const root = contentDiv;
-
-    const walker = document.createTreeWalker(
-      root,
-      NodeFilter.SHOW_TEXT,
-      {
-        acceptNode: (node) => {
-          const parent = node.parentElement;
-          if (!parent) return NodeFilter.FILTER_REJECT;
-          if (parent.closest('.annotation-layer')) return NodeFilter.FILTER_REJECT;
-          if (parent.closest('.text-note')) return NodeFilter.FILTER_REJECT;
-          if (parent.closest('button, input, textarea')) return NodeFilter.FILTER_REJECT;
-          return NodeFilter.FILTER_ACCEPT;
-        }
-      }
-    );
-
-    const textNodes = [];
-    let n = walker.nextNode();
-    while (n) {
-      textNodes.push(n);
-      n = walker.nextNode();
-    }
-
-    for (const tn of textNodes) {
-      wrapMatchesInTextNode(tn, query, caseSensitive);
-    }
-
-    searchMatches = Array.from(contentDiv.querySelectorAll('.search-hit'));
-    if (searchMatches.length > 0) {
-      setActiveMatch(0, true);
-    } else {
-      updateSearchMeta();
-    }
-  }
-
-  function setActiveMatch(index, scroll) {
-    if (searchMatches.length === 0) return;
-    if (index < 0) index = searchMatches.length - 1;
-    if (index >= searchMatches.length) index = 0;
-
-    if (searchIndex >= 0 && searchMatches[searchIndex]) {
-      searchMatches[searchIndex].classList.remove('active');
-    }
-    searchIndex = index;
-    const el = searchMatches[searchIndex];
-    el.classList.add('active');
-    updateSearchMeta();
-    if (scroll) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }
-
-  function openSearchPanel() {
-    searchPanel.classList.add('show');
-    searchInput.focus();
-    searchInput.select();
-  }
-
-  function closeSearchPanel() {
-    searchPanel.classList.remove('show');
-    viewerContainer.focus?.();
-  }
-
-  actionSearch.addEventListener('click', () => {
-    if (searchPanel.classList.contains('show')) {
-      closeSearchPanel();
-    } else {
-      openSearchPanel();
-    }
-  });
-
-  searchClose.addEventListener('click', closeSearchPanel);
-  searchInput.addEventListener('input', runSearch);
-  searchCase.addEventListener('change', runSearch);
-
-  searchNext.addEventListener('click', () => setActiveMatch(searchIndex + 1, true));
-  searchPrev.addEventListener('click', () => setActiveMatch(searchIndex - 1, true));
-
-  searchInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (e.shiftKey) {
-        setActiveMatch(searchIndex - 1, true);
-      } else {
-        setActiveMatch(searchIndex + 1, true);
-      }
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      closeSearchPanel();
-    }
-  });
-
   // 打印和下载功能
   const actionPrint = document.getElementById('action-print');
   const actionDownload = document.getElementById('action-download');
@@ -225,13 +220,30 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   actionDownload.addEventListener('click', () => {
-    if (!fileUrl) return;
-    const a = document.createElement('a');
-    a.href = fileUrl;
-    a.download = docTitleSpan.innerText || 'download.pdf';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    if (fileUrl) {
+      const a = document.createElement('a');
+      a.href = fileUrl;
+      a.download = docTitleSpan.innerText || 'download.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      return;
+    }
+
+    if (currentFileBlob) {
+      const objectUrl = URL.createObjectURL(currentFileBlob);
+      const a = document.createElement('a');
+      a.href = objectUrl;
+      a.download = currentFileName || docTitleSpan.innerText || 'download.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      return;
+    }
+
+    alert('当前文件不支持下载');
+    return;
   });
 
   // 批注工具状态
@@ -430,44 +442,82 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+  renderRecentList();
+  if (recentClearBtn) {
+    recentClearBtn.addEventListener('click', () => {
+      clearRecentList();
+    });
+  }
 
   uploadBtn.addEventListener('click', () => fileInput.click());
-  fileInput.addEventListener('change', (e) => {
+  fileInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (file) {
       errorPlaceholder.innerHTML = '';
-      const objectUrl = URL.createObjectURL(file);
+      const key = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
+      await idbPutPdfFile(key, file);
+      await addRecentPdf({ type: 'idb', key, name: file.name });
+
+      currentFileBlob = file;
+      currentFileName = file.name;
       docTitleSpan.innerText = file.name;
+      window.history.replaceState(null, '', `viewer.html?key=${encodeURIComponent(key)}`);
+      const objectUrl = URL.createObjectURL(file);
       
       uploadContainer.style.display = 'none';
       loadingDiv.style.display = 'block';
       contentDiv.innerHTML = '';
       sidebar.style.display = 'none';
       outlineContainer.innerHTML = '';
-      searchInput.value = '';
-      clearSearchHighlights();
-      closeSearchPanel();
       
       loadPdf(objectUrl);
     }
   });
 
-  if (!fileUrl) {
+  if (!fileUrl && !fileKey) {
     loadingDiv.style.display = 'none';
     uploadContainer.style.display = 'block';
+    renderRecentList();
     return;
   }
 
-  try {
-    const urlObj = new URL(fileUrl);
-    const pathname = urlObj.pathname;
-    const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
-    if (filename) {
-      docTitleSpan.innerText = decodeURIComponent(filename);
+  if (fileUrl) {
+    try {
+      const urlObj = new URL(fileUrl);
+      const pathname = urlObj.pathname;
+      const filename = pathname.substring(pathname.lastIndexOf('/') + 1);
+      if (filename) {
+        docTitleSpan.innerText = decodeURIComponent(filename);
+        currentFileName = decodeURIComponent(filename);
+      } else {
+        currentFileName = 'document.pdf';
+      }
+    } catch (e) {
+      currentFileName = 'document.pdf';
     }
-  } catch (e) {}
-
-  loadPdf(fileUrl);
+    await addRecentPdf({ type: 'url', url: fileUrl, name: docTitleSpan.innerText });
+    uploadContainer.style.display = 'none';
+    loadingDiv.style.display = 'block';
+    loadPdf(fileUrl);
+  } else if (fileKey) {
+    uploadContainer.style.display = 'none';
+    loadingDiv.style.display = 'block';
+    contentDiv.innerHTML = '';
+    const record = await idbGetPdfFile(fileKey);
+    if (!record || !record.blob) {
+      loadingDiv.style.display = 'none';
+      uploadContainer.style.display = 'block';
+      errorPlaceholder.innerHTML = '<div class="error-msg">找不到该 PDF 记录，可能已被清理。请重新上传。</div>';
+      renderRecentList();
+      return;
+    }
+    currentFileBlob = record.blob;
+    currentFileName = record.name || 'document.pdf';
+    docTitleSpan.innerText = currentFileName;
+    await addRecentPdf({ type: 'idb', key: fileKey, name: currentFileName });
+    const objectUrl = URL.createObjectURL(record.blob);
+    loadPdf(objectUrl);
+  }
 
   async function loadPdf(url) {
     // 矩阵乘法辅助函数 (m1 * m2)

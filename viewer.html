@@ -171,73 +171,6 @@
       margin: 0 4px;
     }
 
-    .search-panel {
-      position: absolute;
-      top: 48px;
-      left: 12px;
-      background: var(--toolbar-bg);
-      border: 1px solid var(--toolbar-border);
-      border-top: none;
-      border-radius: 0 0 6px 6px;
-      padding: 10px;
-      display: none;
-      align-items: center;
-      gap: 8px;
-      z-index: 20;
-      box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
-      color: var(--text-sub);
-    }
-    .search-panel.show {
-      display: flex;
-    }
-    #search-input {
-      width: 260px;
-      height: 28px;
-      border-radius: 4px;
-      border: 1px solid var(--toolbar-border);
-      background: rgba(0, 0, 0, 0.15);
-      color: var(--text-main);
-      padding: 0 10px;
-      font-size: 13px;
-    }
-    [data-theme="light"] #search-input,
-    [data-theme="sepia"] #search-input {
-      background: rgba(0, 0, 0, 0.03);
-    }
-    #search-input:focus {
-      outline: none;
-      border-color: #1a73e8;
-    }
-    .search-meta {
-      min-width: 72px;
-      text-align: center;
-      font-family: monospace;
-      color: var(--text-sub);
-      font-size: 12px;
-    }
-    .search-opt {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12px;
-      color: var(--text-sub);
-      margin-left: 6px;
-      user-select: none;
-    }
-    .search-opt input {
-      margin: 0;
-    }
-    .search-hit {
-      background: rgba(255, 235, 59, 0.45);
-      border-bottom: 2px solid rgba(255, 235, 59, 0.95);
-      border-radius: 2px;
-      padding: 0 1px;
-    }
-    .search-hit.active {
-      background: rgba(26, 115, 232, 0.25);
-      border-bottom-color: rgba(26, 115, 232, 0.9);
-    }
-
     /* 页码输入框 */
     .page-input-container {
       display: flex;
@@ -429,6 +362,77 @@
     }
     #upload-btn:hover { background: #1557b0; }
     .error-msg { color: #d32f2f; background-color: #ffebee; padding: 15px; border-radius: 8px; margin-bottom: 20px; text-align: left; font-size: 14px; }
+
+    .recent-section {
+      margin-top: 28px;
+      text-align: left;
+      border-top: 1px solid rgba(127, 127, 127, 0.25);
+      padding-top: 18px;
+    }
+    .recent-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 10px;
+      color: var(--text-main);
+    }
+    .recent-title {
+      font-size: 14px;
+      font-weight: 600;
+      margin: 0;
+    }
+    .recent-clear {
+      background: transparent;
+      border: 1px solid rgba(127, 127, 127, 0.35);
+      color: var(--text-sub);
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .recent-clear:hover {
+      border-color: rgba(26, 115, 232, 0.8);
+      color: var(--text-main);
+    }
+    .recent-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .recent-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      color: var(--text-main);
+      background: rgba(127, 127, 127, 0.08);
+      margin-bottom: 8px;
+    }
+    .recent-item:hover {
+      background: rgba(26, 115, 232, 0.12);
+    }
+    .recent-item .name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      font-size: 13px;
+    }
+    .recent-item .meta {
+      font-size: 12px;
+      color: var(--text-sub);
+      white-space: nowrap;
+    }
+    .recent-empty {
+      color: var(--text-sub);
+      font-size: 12px;
+      padding: 10px 0;
+    }
   </style>
   <script src="lib/pdf.min.js"></script>
   <script src="viewer.js"></script>
@@ -445,9 +449,6 @@
       <div class="toolbar-group">
         <button id="toggle-sidebar" class="icon-btn" title="显示/隐藏侧边栏">
           <svg viewBox="0 0 24 24"><path d="M3 3h18v18H3V3zm16 16V5H5v14h14zM7 7h10v2H7V7zm0 4h10v2H7v-2zm0 4h7v2H7v-2z"/></svg>
-        </button>
-        <button id="action-search" class="icon-btn" title="搜索">
-          <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.47 6.47 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79L20 21.5 21.5 20 15.5 14zM9.5 14C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
         </button>
         <div class="divider"></div>
         <div class="page-input-container">
@@ -505,24 +506,6 @@
       </div>
     </div>
 
-    <div id="search-panel" class="search-panel">
-      <input id="search-input" placeholder="在文档中查找..." autocomplete="off">
-      <button id="search-prev" class="icon-btn" title="上一处">
-        <svg viewBox="0 0 24 24"><path d="M7.41 15.41 12 10.83l4.59 4.58L18 14l-6-6-6 6z"/></svg>
-      </button>
-      <button id="search-next" class="icon-btn" title="下一处">
-        <svg viewBox="0 0 24 24"><path d="M7.41 8.59 12 13.17l4.59-4.58L18 10l-6 6-6-6z"/></svg>
-      </button>
-      <span id="search-meta" class="search-meta">0/0</span>
-      <label class="search-opt">
-        <input type="checkbox" id="search-case">
-        区分大小写
-      </label>
-      <button id="search-close" class="icon-btn" title="关闭">
-        <svg viewBox="0 0 24 24"><path d="M18.3 5.71 12 12l6.3 6.29-1.41 1.42L10.59 13.4 4.29 19.71 2.88 18.29 9.17 12 2.88 5.71 4.29 4.29l6.3 6.3 6.29-6.3z"/></svg>
-      </button>
-    </div>
-    
     <div id="viewer">
       <div id="loading" class="card">
         <div id="loading-text">正在解析 PDF，请稍候...</div>
@@ -538,6 +521,15 @@
         <div id="error-placeholder"></div>
         <input type="file" id="file-input" accept="application/pdf" style="display: none;" />
         <button id="upload-btn">选择 PDF 文件</button>
+
+        <div class="recent-section">
+          <div class="recent-header">
+            <div class="recent-title">最近浏览</div>
+            <button id="recent-clear" class="recent-clear" type="button">清空</button>
+          </div>
+          <div id="recent-empty" class="recent-empty" style="display:none;">暂无记录</div>
+          <ul id="recent-list" class="recent-list"></ul>
+        </div>
       </div>
 
       <div id="content"></div>

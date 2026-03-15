@@ -5,6 +5,7 @@
   "description": "将当前页面的 PDF 文件转换为普通网页(HTML)，以便使用谷歌浏览器自带的网页翻译功能。",
   "permissions": [
     "activeTab",
+    "storage",
     "tabs"
   ],
   "host_permissions": [
