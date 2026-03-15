@@ -22,12 +22,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   const zoomOutBtn = document.getElementById('zoom-out');
   const zoomInBtn = document.getElementById('zoom-in');
   const zoomDisplay = document.getElementById('zoom-display');
+  const actionSearch = document.getElementById('action-search');
+  const searchPanel = document.getElementById('search-panel');
+  const searchInput = document.getElementById('search-input');
+  const searchPrev = document.getElementById('search-prev');
+  const searchNext = document.getElementById('search-next');
+  const searchClose = document.getElementById('search-close');
+  const searchMeta = document.getElementById('search-meta');
+  const searchCase = document.getElementById('search-case');
 
   // 状态变量
   let currentPdf = null;
   let totalPages = 0;
   let currentZoom = 100;
   let sidebarVisible = false;
+  let searchMatches = [];
+  let searchIndex = -1;
 
   // 侧边栏切换
   toggleSidebarBtn.addEventListener('click', () => {
@@ -52,6 +62,159 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   zoomOutBtn.addEventListener('click', () => updateZoom(currentZoom - 10));
   zoomInBtn.addEventListener('click', () => updateZoom(currentZoom + 10));
+
+  function updateSearchMeta() {
+    const total = searchMatches.length;
+    if (total === 0 || searchIndex < 0) {
+      searchMeta.innerText = `0/${total}`;
+      return;
+    }
+    searchMeta.innerText = `${searchIndex + 1}/${total}`;
+  }
+
+  function clearSearchHighlights() {
+    const hits = contentDiv.querySelectorAll('.search-hit');
+    hits.forEach((hit) => {
+      const textNode = document.createTextNode(hit.textContent || '');
+      hit.replaceWith(textNode);
+    });
+    searchMatches = [];
+    searchIndex = -1;
+    updateSearchMeta();
+  }
+
+  function wrapMatchesInTextNode(textNode, query, caseSensitive) {
+    const text = textNode.nodeValue || '';
+    if (!text.trim()) return 0;
+    const haystack = caseSensitive ? text : text.toLowerCase();
+    const needle = caseSensitive ? query : query.toLowerCase();
+    if (!needle) return 0;
+
+    let count = 0;
+    let startIndex = 0;
+    let idx = haystack.indexOf(needle, startIndex);
+    if (idx === -1) return 0;
+
+    const frag = document.createDocumentFragment();
+    while (idx !== -1) {
+      const before = text.slice(startIndex, idx);
+      if (before) frag.appendChild(document.createTextNode(before));
+
+      const matchText = text.slice(idx, idx + needle.length);
+      const span = document.createElement('span');
+      span.className = 'search-hit';
+      span.textContent = matchText;
+      frag.appendChild(span);
+      count++;
+
+      startIndex = idx + needle.length;
+      idx = haystack.indexOf(needle, startIndex);
+    }
+
+    const after = text.slice(startIndex);
+    if (after) frag.appendChild(document.createTextNode(after));
+    textNode.replaceWith(frag);
+    return count;
+  }
+
+  function runSearch() {
+    const query = (searchInput.value || '').trim();
+    clearSearchHighlights();
+    if (!query) return;
+
+    const caseSensitive = !!searchCase.checked;
+    const root = contentDiv;
+
+    const walker = document.createTreeWalker(
+      root,
+      NodeFilter.SHOW_TEXT,
+      {
+        acceptNode: (node) => {
+          const parent = node.parentElement;
+          if (!parent) return NodeFilter.FILTER_REJECT;
+          if (parent.closest('.annotation-layer')) return NodeFilter.FILTER_REJECT;
+          if (parent.closest('.text-note')) return NodeFilter.FILTER_REJECT;
+          if (parent.closest('button, input, textarea')) return NodeFilter.FILTER_REJECT;
+          return NodeFilter.FILTER_ACCEPT;
+        }
+      }
+    );
+
+    const textNodes = [];
+    let n = walker.nextNode();
+    while (n) {
+      textNodes.push(n);
+      n = walker.nextNode();
+    }
+
+    for (const tn of textNodes) {
+      wrapMatchesInTextNode(tn, query, caseSensitive);
+    }
+
+    searchMatches = Array.from(contentDiv.querySelectorAll('.search-hit'));
+    if (searchMatches.length > 0) {
+      setActiveMatch(0, true);
+    } else {
+      updateSearchMeta();
+    }
+  }
+
+  function setActiveMatch(index, scroll) {
+    if (searchMatches.length === 0) return;
+    if (index < 0) index = searchMatches.length - 1;
+    if (index >= searchMatches.length) index = 0;
+
+    if (searchIndex >= 0 && searchMatches[searchIndex]) {
+      searchMatches[searchIndex].classList.remove('active');
+    }
+    searchIndex = index;
+    const el = searchMatches[searchIndex];
+    el.classList.add('active');
+    updateSearchMeta();
+    if (scroll) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+
+  function openSearchPanel() {
+    searchPanel.classList.add('show');
+    searchInput.focus();
+    searchInput.select();
+  }
+
+  function closeSearchPanel() {
+    searchPanel.classList.remove('show');
+    viewerContainer.focus?.();
+  }
+
+  actionSearch.addEventListener('click', () => {
+    if (searchPanel.classList.contains('show')) {
+      closeSearchPanel();
+    } else {
+      openSearchPanel();
+    }
+  });
+
+  searchClose.addEventListener('click', closeSearchPanel);
+  searchInput.addEventListener('input', runSearch);
+  searchCase.addEventListener('change', runSearch);
+
+  searchNext.addEventListener('click', () => setActiveMatch(searchIndex + 1, true));
+  searchPrev.addEventListener('click', () => setActiveMatch(searchIndex - 1, true));
+
+  searchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        setActiveMatch(searchIndex - 1, true);
+      } else {
+        setActiveMatch(searchIndex + 1, true);
+      }
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      closeSearchPanel();
+    }
+  });
 
   // 打印和下载功能
   const actionPrint = document.getElementById('action-print');
@@ -281,6 +444,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       contentDiv.innerHTML = '';
       sidebar.style.display = 'none';
       outlineContainer.innerHTML = '';
+      searchInput.value = '';
+      clearSearchHighlights();
+      closeSearchPanel();
       
       loadPdf(objectUrl);
     }
