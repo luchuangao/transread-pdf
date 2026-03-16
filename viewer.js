@@ -218,11 +218,60 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 打印和下载功能
   const actionPrint = document.getElementById('action-print');
+  const actionExportPdf = document.getElementById('action-export-pdf');
   const actionDownload = document.getElementById('action-download');
 
   actionPrint.addEventListener('click', () => {
     window.print();
   });
+
+  if (actionExportPdf) {
+    actionExportPdf.addEventListener('click', () => {
+      actionExportPdf.disabled = true;
+
+      chrome.tabs.getCurrent((tab) => {
+        const tabId = tab?.id;
+        const rawName = (currentFileName || docTitleSpan.innerText || 'transread').trim();
+        const safeName = rawName.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 120);
+        const filename = safeName.toLowerCase().endsWith('.pdf') ? safeName : `${safeName}.pdf`;
+
+        chrome.runtime.sendMessage(
+          { type: 'EXPORT_TO_PDF', tabId, filename },
+          (resp) => {
+            actionExportPdf.disabled = false;
+
+            if (chrome.runtime.lastError) {
+              alert(`导出失败：${chrome.runtime.lastError.message}`);
+              return;
+            }
+            if (!resp || !resp.ok) {
+              alert(`导出失败：${resp?.error || '未知错误'}`);
+              return;
+            }
+
+            try {
+              const binary = atob(resp.data);
+              const bytes = new Uint8Array(binary.length);
+              for (let i = 0; i < binary.length; i++) {
+                bytes[i] = binary.charCodeAt(i);
+              }
+              const blob = new Blob([bytes], { type: 'application/pdf' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = filename;
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+              setTimeout(() => URL.revokeObjectURL(url), 2000);
+            } catch (e) {
+              alert('导出失败：PDF 数据解析错误');
+            }
+          }
+        );
+      });
+    });
+  }
 
   actionDownload.addEventListener('click', () => {
     if (fileUrl) {
