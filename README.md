@@ -2,8 +2,6 @@
 
 PDF 对照翻译阅读器（Chrome Extension）
 
-产品文档：PRODUCT_DOC.md
-
 ---
 
 # PDF 转网页 (翻译助手)
