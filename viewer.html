@@ -217,33 +217,6 @@
       pointer-events: auto;
     }
     
-    .text-note {
-      position: absolute;
-      min-width: 100px;
-      min-height: 24px;
-      background: #fff;
-      border: 1px solid #ffeb3b;
-      box-shadow: 2px 2px 5px rgba(0,0,0,0.2);
-      padding: 5px;
-      color: #333;
-      font-size: 14px;
-      outline: none;
-      z-index: 3;
-      pointer-events: auto;
-    }
-    
-    .inserted-image {
-      position: absolute;
-      max-width: 300px;
-      cursor: move;
-      z-index: 3;
-      pointer-events: auto;
-      border: 1px dashed transparent;
-    }
-    .inserted-image:hover {
-      border-color: #1a73e8;
-    }
-    
     .highlighted-text {
       background-color: rgba(255, 235, 59, 0.4);
       border-bottom: 2px solid #ffeb3b;
@@ -288,12 +261,92 @@
     #theme-sepia { background-color: #f4ecd8; border-color: #d4c5a9; }
     #theme-dark.active { border-color: #4facfe; }
 
+    #content-area {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+    }
+
     #viewer { 
       flex: 1; 
       overflow-y: auto; 
       padding: 40px 0; 
       position: relative; 
       scroll-behavior: smooth;
+    }
+
+    #notes-panel {
+      width: 320px;
+      min-width: 260px;
+      border-left: 1px solid var(--toolbar-border);
+      background: var(--toolbar-bg);
+      display: flex;
+      flex-direction: column;
+      transition: background-color 0.3s, border-color 0.3s;
+    }
+    #notes-panel.collapsed {
+      width: 56px;
+      min-width: 56px;
+    }
+    #notes-panel.collapsed #notes-title,
+    #notes-panel.collapsed #notes-clear,
+    #notes-panel.collapsed #notes-text,
+    #notes-panel.collapsed #notes-footer {
+      display: none !important;
+    }
+    #notes-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 10px;
+      border-bottom: 1px solid var(--toolbar-border);
+      color: var(--text-main);
+      user-select: none;
+    }
+    #notes-title {
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .notes-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .notes-btn {
+      background: transparent;
+      border: 1px solid rgba(127, 127, 127, 0.35);
+      color: var(--text-sub);
+      border-radius: 4px;
+      padding: 4px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .notes-btn:hover {
+      border-color: rgba(26, 115, 232, 0.8);
+      color: var(--text-main);
+    }
+    #notes-text {
+      flex: 1;
+      resize: none;
+      border: none;
+      outline: none;
+      padding: 12px;
+      background: transparent;
+      color: var(--text-main);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    #notes-text::placeholder {
+      color: var(--text-sub);
+    }
+    #notes-footer {
+      padding: 8px 12px;
+      border-top: 1px solid var(--toolbar-border);
+      color: var(--text-sub);
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
     }
     
     /* 流式页面容器，沉浸式阅读模式 */
@@ -474,22 +527,9 @@
         <button id="tool-highlight" class="icon-btn" title="高亮文本 (选中文字后点击)">
           <svg viewBox="0 0 24 24"><path d="M3.5 18.5l6-6-4-4-6 6 4 4zM20.5 4.5l-4-4-9 9 4 4 9-9zM3 20h18v2H3z"/></svg>
         </button>
-        <!-- 添加文本 -->
-        <button id="tool-text" class="icon-btn" title="添加文本备注">
-          <svg viewBox="0 0 24 24"><path d="M2.5 4v3h5v12h3V7h5V4h-13zm19 5h-9v3h3v7h3v-7h3V9z"/></svg>
-        </button>
         <!-- 自由绘制 -->
         <button id="tool-draw" class="icon-btn" title="画笔自由绘制">
           <svg viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
-        </button>
-        <!-- 插入图片 -->
-        <button id="tool-image" class="icon-btn" title="插入图片">
-          <svg viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg>
-        </button>
-        <div class="divider"></div>
-        <!-- 打印 -->
-        <button id="action-print" class="icon-btn" title="打印/导出为PDF">
-          <svg viewBox="0 0 24 24"><path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"/></svg>
         </button>
       </div>
       
@@ -505,33 +545,50 @@
       </div>
     </div>
 
-    <div id="viewer">
-      <div id="loading" class="card">
-        <div id="loading-text">正在解析 PDF，请稍候...</div>
-        <div class="tips">提示：解析完成后，您可以右键点击页面空白处，选择“翻译成中文”。<br>由于使用了原版排版，翻译后如果句子变长可能会出现轻微重叠，这是正常现象。</div>
+    <div id="content-area">
+      <div id="viewer">
+        <div id="loading" class="card">
+          <div id="loading-text">正在解析 PDF，请稍候...</div>
+          <div class="tips">提示：解析完成后，您可以右键点击页面空白处，选择“翻译成中文”。<br>由于使用了原版排版，翻译后如果句子变长可能会出现轻微重叠，这是正常现象。</div>
+        </div>
+
+        <div id="upload-container" class="card">
+          <h2 style="margin-top: 0; color: #333;">选择要翻译的 PDF 文件</h2>
+          <p style="color: #666; margin-bottom: 30px;">
+            由于浏览器安全限制，本地文件或受保护的网页无法直接读取。<br>
+            请直接在这里手动上传您的 PDF 文件进行转换。
+          </p>
+          <div id="error-placeholder"></div>
+          <input type="file" id="file-input" accept="application/pdf" style="display: none;" />
+          <button id="upload-btn">选择 PDF 文件</button>
+
+          <div class="recent-section">
+            <div class="recent-header">
+              <div class="recent-title">最近浏览</div>
+              <button id="recent-clear" class="recent-clear" type="button">清空</button>
+            </div>
+            <div id="recent-empty" class="recent-empty" style="display:none;">暂无记录</div>
+            <ul id="recent-list" class="recent-list"></ul>
+          </div>
+        </div>
+
+        <div id="content"></div>
       </div>
 
-      <div id="upload-container" class="card">
-        <h2 style="margin-top: 0; color: #333;">选择要翻译的 PDF 文件</h2>
-        <p style="color: #666; margin-bottom: 30px;">
-          由于浏览器安全限制，本地文件或受保护的网页无法直接读取。<br>
-          请直接在这里手动上传您的 PDF 文件进行转换。
-        </p>
-        <div id="error-placeholder"></div>
-        <input type="file" id="file-input" accept="application/pdf" style="display: none;" />
-        <button id="upload-btn">选择 PDF 文件</button>
-
-        <div class="recent-section">
-          <div class="recent-header">
-            <div class="recent-title">最近浏览</div>
-            <button id="recent-clear" class="recent-clear" type="button">清空</button>
+      <div id="notes-panel">
+        <div id="notes-header">
+          <div id="notes-title">笔记</div>
+          <div class="notes-actions">
+            <button id="notes-clear" class="notes-btn" type="button">清空</button>
+            <button id="notes-collapse" class="notes-btn" type="button">收起</button>
           </div>
-          <div id="recent-empty" class="recent-empty" style="display:none;">暂无记录</div>
-          <ul id="recent-list" class="recent-list"></ul>
+        </div>
+        <textarea id="notes-text" placeholder="打开 PDF 后可记录笔记（自动保存）" disabled></textarea>
+        <div id="notes-footer">
+          <span id="notes-status">未保存</span>
+          <span id="notes-count">0</span>
         </div>
       </div>
-
-      <div id="content"></div>
     </div>
   </div>
 </body>

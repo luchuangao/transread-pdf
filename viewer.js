@@ -17,6 +17,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   const pageNumInput = document.getElementById('page-num-input');
   const docTitleSpan = document.getElementById('doc-title');
   const viewerContainer = document.getElementById('viewer');
+  const notesPanel = document.getElementById('notes-panel');
+  const notesText = document.getElementById('notes-text');
+  const notesClearBtn = document.getElementById('notes-clear');
+  const notesCollapseBtn = document.getElementById('notes-collapse');
+  const notesStatus = document.getElementById('notes-status');
+  const notesCount = document.getElementById('notes-count');
   
   // 新增工具栏按钮
   const toggleSidebarBtn = document.getElementById('toggle-sidebar');
@@ -39,6 +45,56 @@ document.addEventListener('DOMContentLoaded', async () => {
   let saveReadingPosTimer = null;
   let activeLoadSeq = 0;
   let activeObjectUrl = null;
+  let saveNotesTimer = null;
+
+  function setNotesStatus(text) {
+    if (notesStatus) notesStatus.innerText = text;
+  }
+
+  function setNotesCountText(text) {
+    if (notesCount) notesCount.innerText = text;
+  }
+
+  function updateNotesCount() {
+    if (!notesText) return;
+    const v = notesText.value || '';
+    setNotesCountText(String(v.length));
+  }
+
+  async function loadNotesForCurrentDoc() {
+    if (!notesText) return;
+    if (!currentDocKey) {
+      notesText.value = '';
+      notesText.disabled = true;
+      notesText.placeholder = '打开 PDF 后可记录笔记（自动保存）';
+      updateNotesCount();
+      setNotesStatus('未保存');
+      return;
+    }
+
+    const key = `notes:${currentDocKey}`;
+    const value = await storageGet(key, '');
+    notesText.disabled = false;
+    notesText.placeholder = '在这里记录笔记（自动保存）';
+    notesText.value = value || '';
+    updateNotesCount();
+    setNotesStatus('已加载');
+  }
+
+  async function saveNotesForCurrentDoc() {
+    if (!notesText || !currentDocKey) return;
+    const key = `notes:${currentDocKey}`;
+    const value = notesText.value || '';
+    await storageSet(key, value);
+    setNotesStatus('已保存');
+  }
+
+  function setNotesCollapsed(collapsed) {
+    if (!notesPanel || !notesCollapseBtn) return;
+    notesPanel.classList.toggle('collapsed', !!collapsed);
+    notesCollapseBtn.innerText = collapsed ? '展开' : '收起';
+    localStorage.setItem('notes-collapsed', collapsed ? '1' : '0');
+  }
 
   function storageGet(key, defaultValue) {
     return new Promise((resolve) => {
@@ -216,12 +272,33 @@ document.addEventListener('DOMContentLoaded', async () => {
   zoomOutBtn.addEventListener('click', () => updateZoom(currentZoom - 10));
   zoomInBtn.addEventListener('click', () => updateZoom(currentZoom + 10));
 
-  // 打印和下载功能
-  const actionPrint = document.getElementById('action-print');
+  if (notesText) {
+    notesText.addEventListener('input', () => {
+      setNotesStatus('未保存');
+      updateNotesCount();
+      if (saveNotesTimer) clearTimeout(saveNotesTimer);
+      saveNotesTimer = setTimeout(() => {
+        saveNotesForCurrentDoc();
+      }, 500);
+    });
+  }
 
-  actionPrint.addEventListener('click', () => {
-    window.print();
-  });
+  if (notesClearBtn) {
+    notesClearBtn.addEventListener('click', async () => {
+      if (!notesText || notesText.disabled) return;
+      if (!confirm('清空当前文档的笔记？')) return;
+      notesText.value = '';
+      updateNotesCount();
+      await saveNotesForCurrentDoc();
+    });
+  }
+
+  if (notesCollapseBtn) {
+    notesCollapseBtn.addEventListener('click', () => {
+      const collapsed = !!notesPanel?.classList.contains('collapsed');
+      setNotesCollapsed(!collapsed);
+    });
+  }
 
   function goHome() {
     activeLoadSeq += 1;
@@ -240,6 +317,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentFileBlob = null;
     currentFileName = '';
     currentDocKey = null;
+    loadNotesForCurrentDoc();
     fileInput.value = '';
     window.history.replaceState(null, '', 'viewer.html');
 
@@ -260,11 +338,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // 批注工具状态
-  let currentTool = null; // 'text', 'draw'
+  let currentTool = null; // 'draw'
   const toolHighlight = document.getElementById('tool-highlight');
-  const toolText = document.getElementById('tool-text');
   const toolDraw = document.getElementById('tool-draw');
-  const toolImage = document.getElementById('tool-image');
 
   function setActiveTool(tool) {
     if (currentTool === tool) {
@@ -274,23 +350,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     
     // 更新UI
-    [toolText, toolDraw].forEach(btn => btn.classList.remove('active-tool'));
+    [toolDraw].forEach(btn => btn.classList.remove('active-tool'));
     
-    if (currentTool === 'text') toolText.classList.add('active-tool');
     if (currentTool === 'draw') toolDraw.classList.add('active-tool');
 
     // 启用/禁用所有页面的批注层
     document.querySelectorAll('.annotation-layer').forEach(layer => {
       if (currentTool) {
         layer.classList.add('active');
-        layer.style.cursor = currentTool === 'text' ? 'text' : 'crosshair';
+        layer.style.cursor = 'crosshair';
       } else {
         layer.classList.remove('active');
       }
     });
   }
 
-  toolText.addEventListener('click', () => setActiveTool('text'));
   toolDraw.addEventListener('click', () => setActiveTool('draw'));
 
   // 1. 高亮功能 (基于 Selection API)
@@ -311,77 +385,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (e) {
       console.warn("跨段落高亮暂不支持，请在同一段落内选择");
     }
-  });
-
-  // 2. 插入图片功能
-  toolImage.addEventListener('click', () => {
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = 'image/*';
-    input.onchange = (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        // 默认插入到当前视口内的第一页
-        const containers = document.querySelectorAll('.page-container');
-        let targetPage = containers[0];
-        const viewerTop = viewerContainer.scrollTop;
-        
-        for (let i = 0; i < containers.length; i++) {
-          if (containers[i].offsetTop + containers[i].offsetHeight > viewerTop) {
-            targetPage = containers[i];
-            break;
-          }
-        }
-
-        let layer = targetPage.querySelector('.annotation-layer');
-        if (!layer) return;
-
-        const img = document.createElement('img');
-        img.src = event.target.result;
-        img.className = 'inserted-image';
-        img.style.top = '100px';
-        img.style.left = '100px';
-
-        // 简单的拖拽实现
-        let isDragging = false;
-        let startX, startY, initialX, initialY;
-
-        img.addEventListener('mousedown', (e) => {
-          isDragging = true;
-          startX = e.clientX;
-          startY = e.clientY;
-          initialX = parseInt(img.style.left) || 0;
-          initialY = parseInt(img.style.top) || 0;
-          e.preventDefault(); // 防止默认的图片拖拽
-        });
-
-        document.addEventListener('mousemove', (e) => {
-          if (!isDragging) return;
-          const dx = e.clientX - startX;
-          const dy = e.clientY - startY;
-          img.style.left = `${initialX + dx}px`;
-          img.style.top = `${initialY + dy}px`;
-        });
-
-        document.addEventListener('mouseup', () => {
-          isDragging = false;
-        });
-
-        // 双击删除图片
-        img.addEventListener('dblclick', () => {
-          if (confirm('删除这张图片？')) {
-            img.remove();
-          }
-        });
-
-        layer.appendChild(img);
-      };
-      reader.readAsDataURL(file);
-    };
-    input.click();
   });
 
   // 页码跳转
@@ -467,6 +470,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+  setNotesCollapsed(localStorage.getItem('notes-collapsed') === '1');
+  loadNotesForCurrentDoc();
   renderRecentList();
   if (recentClearBtn) {
     recentClearBtn.addEventListener('click', () => {
@@ -486,6 +491,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       currentFileBlob = file;
       currentFileName = file.name;
       currentDocKey = `idb:${key}`;
+      await loadNotesForCurrentDoc();
       docTitleSpan.innerText = file.name;
       window.history.replaceState(null, '', `viewer.html?key=${encodeURIComponent(key)}`);
       if (activeObjectUrl) {
@@ -515,6 +521,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (fileUrl) {
     currentDocKey = `url:${fileUrl}`;
+    await loadNotesForCurrentDoc();
     try {
       const urlObj = new URL(fileUrl);
       const pathname = urlObj.pathname;
@@ -534,6 +541,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     loadPdf(fileUrl);
   } else if (fileKey) {
     currentDocKey = `idb:${fileKey}`;
+    await loadNotesForCurrentDoc();
     uploadContainer.style.display = 'none';
     loadingDiv.style.display = 'block';
     contentDiv.innerHTML = '';
@@ -922,31 +930,73 @@ document.addEventListener('DOMContentLoaded', async () => {
          drawCanvas.style.pointerEvents = 'none';
          drawCanvas.style.zIndex = '1';
          
-         // 等待页面渲染后设置 canvas 尺寸
-         setTimeout(() => {
-           drawCanvas.width = pageContainer.offsetWidth;
-           drawCanvas.height = pageContainer.offsetHeight;
-         }, 100);
- 
          // 自由绘制逻辑
          let isDrawing = false;
          let ctx = drawCanvas.getContext('2d');
-         ctx.strokeStyle = '#ffeb3b'; // 默认黄色荧光笔
-         ctx.lineWidth = 4;
-         ctx.lineCap = 'round';
-         ctx.lineJoin = 'round';
+
+         function setupCtx() {
+           ctx = drawCanvas.getContext('2d');
+           const dpr = window.devicePixelRatio || 1;
+           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+           ctx.strokeStyle = '#ffeb3b';
+           ctx.lineWidth = 4;
+           ctx.lineCap = 'round';
+           ctx.lineJoin = 'round';
+         }
+
+         function resizeCanvasPreserve() {
+           const dpr = window.devicePixelRatio || 1;
+           const cssW = Math.max(1, pageContainer.clientWidth);
+           const cssH = Math.max(1, pageContainer.clientHeight);
+           const nextW = Math.round(cssW * dpr);
+           const nextH = Math.round(cssH * dpr);
+
+           if (drawCanvas.width === nextW && drawCanvas.height === nextH) {
+             setupCtx();
+             return;
+           }
+
+           const prev = document.createElement('canvas');
+           prev.width = drawCanvas.width || 1;
+           prev.height = drawCanvas.height || 1;
+           const prevCtx = prev.getContext('2d');
+           try {
+             prevCtx.drawImage(drawCanvas, 0, 0);
+           } catch (e) {}
+
+           drawCanvas.width = nextW;
+           drawCanvas.height = nextH;
+           setupCtx();
+
+           try {
+             ctx.setTransform(1, 0, 0, 1, 0, 0);
+             ctx.drawImage(prev, 0, 0, prev.width, prev.height, 0, 0, nextW, nextH);
+           } catch (e) {}
+           setupCtx();
+         }
+
+         resizeCanvasPreserve();
+         let ro = null;
+         if (typeof ResizeObserver !== 'undefined') {
+           ro = new ResizeObserver(() => {
+             resizeCanvasPreserve();
+           });
+           try {
+             ro.observe(pageContainer);
+           } catch (e) {}
+         }
  
          annotationLayer.addEventListener('mousedown', (e) => {
            if (currentTool !== 'draw') return;
            isDrawing = true;
-           const rect = drawCanvas.getBoundingClientRect();
+           const rect = annotationLayer.getBoundingClientRect();
            ctx.beginPath();
            ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
          });
  
          annotationLayer.addEventListener('mousemove', (e) => {
            if (!isDrawing || currentTool !== 'draw') return;
-           const rect = drawCanvas.getBoundingClientRect();
+           const rect = annotationLayer.getBoundingClientRect();
            ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
            ctx.stroke();
          });
@@ -957,48 +1007,6 @@ document.addEventListener('DOMContentLoaded', async () => {
  
          annotationLayer.addEventListener('mouseleave', () => {
            isDrawing = false;
-         });
- 
-         // 文本备注逻辑
-         annotationLayer.addEventListener('click', (e) => {
-           if (currentTool !== 'text') return;
-           // 防止点击已有备注时创建新备注
-           if (e.target.classList.contains('text-note')) return;
- 
-           const rect = annotationLayer.getBoundingClientRect();
-           const x = e.clientX - rect.left;
-           const y = e.clientY - rect.top;
- 
-           const note = document.createElement('div');
-           note.className = 'text-note';
-           note.contentEditable = true;
-           note.style.left = `${x}px`;
-           note.style.top = `${y}px`;
-           note.innerText = '输入备注...';
- 
-           // 双击删除备注
-           note.addEventListener('dblclick', () => {
-             if (confirm('删除这条备注？')) {
-               note.remove();
-             }
-           });
- 
-           // 失去焦点时如果为空则删除
-           note.addEventListener('blur', () => {
-             if (!note.innerText.trim()) {
-               note.remove();
-             }
-           });
- 
-           annotationLayer.appendChild(note);
-           // 延迟聚焦，避免立即触发 click 事件
-           setTimeout(() => {
-             note.focus();
-             document.execCommand('selectAll', false, null);
-           }, 50);
-           
-           // 添加完一个后自动关闭工具
-           setActiveTool(null);
          });
  
          pageContainer.appendChild(drawCanvas);
