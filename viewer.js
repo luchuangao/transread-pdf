@@ -338,9 +338,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // 批注工具状态
-  let currentTool = null; // 'draw'
+  let currentTool = null; // 'draw' | 'erase'
   const toolHighlight = document.getElementById('tool-highlight');
   const toolDraw = document.getElementById('tool-draw');
+  const toolErase = document.getElementById('tool-erase');
 
   function setActiveTool(tool) {
     if (currentTool === tool) {
@@ -350,15 +351,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     
     // 更新UI
-    [toolDraw].forEach(btn => btn.classList.remove('active-tool'));
+    [toolDraw, toolErase].filter(Boolean).forEach(btn => btn.classList.remove('active-tool'));
     
     if (currentTool === 'draw') toolDraw.classList.add('active-tool');
+    if (currentTool === 'erase' && toolErase) toolErase.classList.add('active-tool');
 
     // 启用/禁用所有页面的批注层
     document.querySelectorAll('.annotation-layer').forEach(layer => {
       if (currentTool) {
         layer.classList.add('active');
-        layer.style.cursor = 'crosshair';
+        layer.style.cursor = currentTool === 'erase' ? 'cell' : 'crosshair';
       } else {
         layer.classList.remove('active');
       }
@@ -366,6 +368,29 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   toolDraw.addEventListener('click', () => setActiveTool('draw'));
+  if (toolErase) toolErase.addEventListener('click', () => setActiveTool('erase'));
+
+  function unwrapHighlightedSpan(span) {
+    const parent = span.parentNode;
+    if (!parent) return;
+    while (span.firstChild) {
+      parent.insertBefore(span.firstChild, span);
+    }
+    parent.removeChild(span);
+    parent.normalize();
+  }
+
+  contentDiv.addEventListener('click', (e) => {
+    if (currentTool !== 'erase') return;
+    const target = e.target;
+    if (!(target instanceof Element)) return;
+    const span = target.closest('.highlighted-text');
+    if (span) {
+      unwrapHighlightedSpan(span);
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
 
   // 1. 高亮功能 (基于 Selection API)
   toolHighlight.addEventListener('click', () => {
@@ -933,6 +958,7 @@ document.addEventListener('DOMContentLoaded', async () => {
          // 自由绘制逻辑
          let isDrawing = false;
          let ctx = drawCanvas.getContext('2d');
+         let activeStrokeTool = null;
 
          function setupCtx() {
            ctx = drawCanvas.getContext('2d');
@@ -987,15 +1013,24 @@ document.addEventListener('DOMContentLoaded', async () => {
          }
  
          annotationLayer.addEventListener('mousedown', (e) => {
-           if (currentTool !== 'draw') return;
+           if (currentTool !== 'draw' && currentTool !== 'erase') return;
            isDrawing = true;
+           activeStrokeTool = currentTool;
            const rect = annotationLayer.getBoundingClientRect();
+           if (activeStrokeTool === 'erase') {
+             ctx.globalCompositeOperation = 'destination-out';
+             ctx.lineWidth = 20;
+           } else {
+             ctx.globalCompositeOperation = 'source-over';
+             ctx.strokeStyle = '#ffeb3b';
+             ctx.lineWidth = 4;
+           }
            ctx.beginPath();
            ctx.moveTo(e.clientX - rect.left, e.clientY - rect.top);
          });
  
          annotationLayer.addEventListener('mousemove', (e) => {
-           if (!isDrawing || currentTool !== 'draw') return;
+           if (!isDrawing || !activeStrokeTool) return;
            const rect = annotationLayer.getBoundingClientRect();
            ctx.lineTo(e.clientX - rect.left, e.clientY - rect.top);
            ctx.stroke();
@@ -1003,10 +1038,12 @@ document.addEventListener('DOMContentLoaded', async () => {
  
          annotationLayer.addEventListener('mouseup', () => {
            isDrawing = false;
+           activeStrokeTool = null;
          });
  
          annotationLayer.addEventListener('mouseleave', () => {
            isDrawing = false;
+           activeStrokeTool = null;
          });
  
          pageContainer.appendChild(drawCanvas);
