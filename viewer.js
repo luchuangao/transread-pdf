@@ -225,50 +225,151 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.print();
   });
 
+  function createToast(text) {
+    const el = document.createElement('div');
+    el.style.position = 'fixed';
+    el.style.right = '16px';
+    el.style.bottom = '16px';
+    el.style.zIndex = '99999';
+    el.style.background = 'rgba(0,0,0,0.78)';
+    el.style.color = '#fff';
+    el.style.padding = '10px 12px';
+    el.style.borderRadius = '8px';
+    el.style.fontSize = '13px';
+    el.style.maxWidth = '320px';
+    el.style.boxShadow = '0 10px 30px rgba(0,0,0,0.35)';
+    el.style.backdropFilter = 'blur(6px)';
+    el.innerText = text;
+    document.body.appendChild(el);
+    return {
+      update: (t) => {
+        el.innerText = t;
+      },
+      remove: () => {
+        el.remove();
+      }
+    };
+  }
+
+  function isProbablyTranslated() {
+    const cls = document.documentElement?.classList;
+    if (cls && (cls.contains('translated-ltr') || cls.contains('translated-rtl'))) return true;
+    if (document.querySelector('iframe.goog-te-banner-frame')) return true;
+    if (document.querySelector('body > div[class*="VIpgJd-"]')) return true;
+    return false;
+  }
+
+  function waitForDomStable({ idleMs, timeoutMs }) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      let lastMutation = Date.now();
+
+      const observer = new MutationObserver(() => {
+        lastMutation = Date.now();
+      });
+
+      try {
+        observer.observe(document.body, {
+          subtree: true,
+          childList: true,
+          characterData: true,
+          attributes: true
+        });
+      } catch (e) {}
+
+      const tick = () => {
+        const now = Date.now();
+        const stableFor = now - lastMutation;
+        if (stableFor >= idleMs && now - start >= 800) {
+          try {
+            observer.disconnect();
+          } catch (e) {}
+          resolve({ status: 'stable', stableForMs: stableFor });
+          return;
+        }
+        if (now - start >= timeoutMs) {
+          try {
+            observer.disconnect();
+          } catch (e) {}
+          resolve({ status: 'timeout', stableForMs: stableFor });
+          return;
+        }
+        setTimeout(tick, 250);
+      };
+
+      setTimeout(tick, 250);
+    });
+  }
+
+  function exportCurrentTabToPdf(filename, onDone) {
+    chrome.tabs.getCurrent((tab) => {
+      const tabId = tab?.id;
+      chrome.runtime.sendMessage(
+        { type: 'EXPORT_TO_PDF', tabId, filename },
+        (resp) => {
+          if (chrome.runtime.lastError) {
+            onDone({ ok: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+          if (!resp || !resp.ok) {
+            onDone({ ok: false, error: resp?.error || '未知错误' });
+            return;
+          }
+          onDone({ ok: true, data: resp.data });
+        }
+      );
+    });
+  }
+
   if (actionExportPdf) {
     actionExportPdf.addEventListener('click', () => {
       actionExportPdf.disabled = true;
+      const rawName = (currentFileName || docTitleSpan.innerText || 'transread').trim();
+      const safeName = rawName.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 120);
+      const filename = safeName.toLowerCase().endsWith('.pdf') ? safeName : `${safeName}.pdf`;
 
-      chrome.tabs.getCurrent((tab) => {
-        const tabId = tab?.id;
-        const rawName = (currentFileName || docTitleSpan.innerText || 'transread').trim();
-        const safeName = rawName.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 120);
-        const filename = safeName.toLowerCase().endsWith('.pdf') ? safeName : `${safeName}.pdf`;
+      const toast = createToast('等待 Chrome 翻译完成后导出...');
+      const translated0 = isProbablyTranslated();
+      if (translated0) {
+        toast.update('检测到已翻译，准备导出 PDF...');
+      }
 
-        chrome.runtime.sendMessage(
-          { type: 'EXPORT_TO_PDF', tabId, filename },
-          (resp) => {
-            actionExportPdf.disabled = false;
+      waitForDomStable({ idleMs: 1500, timeoutMs: 45000 }).then((res) => {
+        const translated1 = isProbablyTranslated();
+        if (res.status === 'timeout' && !translated1 && !translated0) {
+          toast.update('未检测到翻译完成，导出当前页面...');
+        } else {
+          toast.update('正在生成 PDF...');
+        }
 
-            if (chrome.runtime.lastError) {
-              alert(`导出失败：${chrome.runtime.lastError.message}`);
-              return;
-            }
-            if (!resp || !resp.ok) {
-              alert(`导出失败：${resp?.error || '未知错误'}`);
-              return;
-            }
+        exportCurrentTabToPdf(filename, (out) => {
+          actionExportPdf.disabled = false;
+          toast.remove();
 
-            try {
-              const binary = atob(resp.data);
-              const bytes = new Uint8Array(binary.length);
-              for (let i = 0; i < binary.length; i++) {
-                bytes[i] = binary.charCodeAt(i);
-              }
-              const blob = new Blob([bytes], { type: 'application/pdf' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = filename;
-              document.body.appendChild(a);
-              a.click();
-              document.body.removeChild(a);
-              setTimeout(() => URL.revokeObjectURL(url), 2000);
-            } catch (e) {
-              alert('导出失败：PDF 数据解析错误');
-            }
+          if (!out.ok) {
+            alert(`导出失败：${out.error || '未知错误'}`);
+            return;
           }
-        );
+
+          try {
+            const binary = atob(out.data);
+            const bytes = new Uint8Array(binary.length);
+            for (let i = 0; i < binary.length; i++) {
+              bytes[i] = binary.charCodeAt(i);
+            }
+            const blob = new Blob([bytes], { type: 'application/pdf' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+          } catch (e) {
+            alert('导出失败：PDF 数据解析错误');
+          }
+        });
       });
     });
   }
